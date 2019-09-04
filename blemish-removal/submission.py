@@ -11,12 +11,12 @@ def onMouse(action, x, y, flags, userdata):
         patch = userdata[y-15:y+15,x-15:x+15]
         patch = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
         patch = cv2.Laplacian(patch, -1)
-        patch = cv2.resize(patch, (200,200))
-        cv2.setWindowTitle("patch", "lapl")
-        cv2.imshow("patch", patch)
+        resized = cv2.resize(patch, (200,200))
+        cv2.setWindowTitle("patch", "Second derivative = {0}".format(np.sum(patch)))
+        cv2.imshow("patch", resized)
 
 
-source = cv2.imread("blemish.png",1)
+source = cv2.imread("blemish-removal/blemish.png",1)
 # Make a dummy image, will be useful to clear the drawing
 dummy = source.copy()
 cv2.namedWindow("Window")
