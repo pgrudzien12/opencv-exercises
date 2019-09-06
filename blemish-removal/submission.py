@@ -19,49 +19,51 @@ def displayZoomed(fragment, wndName, wndTitle=None):
         cv2.setWindowTitle(wndName, wndTitle)
     cv2.imshow(wndName, resizedFragment)
 
-def getPatch(xy, gray, img)
-    colorPatch = img[xy[1] - 15:xy[1] + 15, xy[0] - 15:xy[0] + 15]
-    grayPatch = gray[xy[1] - 15:xy[1] + 15, xy[0] - 15:xy[0] + 15]
-    return (grayPatch, colorPatch)
+def getPatch(xy, img):
+    patch = img[xy[1] - 15:xy[1] + 15, xy[0] - 15:xy[0] + 15]
+    return patch
 
 def pickBestAround(xy, values, image):
     bestV = 0
     best_xy = None
-    for move in np.array([(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]):
-        move_s = move * 30
-        xy_m = xy + move_s
+    for move in np.array([(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]) * 30:
+        xy_m = xy + move
         if xy_m[xy_m<0].sum() < 0:
             continue
-        patch, _ = values[xy_m[1] - 15:xy_m[1] + 15, xy_m[0] - 15:xy_m[0] + 15]
+        patch = getPatch(xy_m, values)
         variance = 1/calcVariance(patch).sum()
         if variance > bestV:
             bestV = variance
             best_xy = xy_m
 
-        return getPatch(best_xy)
+        return getPatch(best_xy, values), getPatch(best_xy, image)
 
 def onMouse(action, x, y, flags, img):
     if action == cv2.EVENT_LBUTTONDOWN or action == cv2.EVENT_RBUTTONDOWN:
-        img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        gray = img_hsv[:, :, 0]
-        xy_m = np.array((x,y)) + np.array((-15, -15))
-        if xy_m[xy_m<0].sum() < 0:
-            return
-        patch = gray[y-15:y+15, x-15:x+15]
-        cpatch = img[y-15:y+15, x-15:x+15]
-        variance = calcVariance(patch)
-        displayZoomed(cpatch, "Variance",
-                      "Patch {0}".format(np.sum(variance)))
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)[:, :, 0]
 
+        # pick the best patch and display it
         (grayPatch, colorPatch) = pickBestAround((x, y), gray, img)
-        variance = calcVariance(grayPatch)
-        displayZoomed(colorPatch, "Best Patch",
-                      "Best Patch V={0}".format(np.sum(variance)))
-        if action == cv2.EVENT_LBUTTONDOWN:
-            return
-        src_mask = np.ones_like(patch) * 255
+        
+        # seamless clone the patch onto the image
+        src_mask = np.ones_like(grayPatch) * 255
         cv2.seamlessClone(
             colorPatch, img, src_mask, (x, y), cv2.NORMAL_CLONE, blend=img)
+
+    if action == cv2.EVENT_RBUTTONDOWN:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)[:, :, 0]
+        # display the selected area
+        patch, cpatch = getPatch((x,y), gray), getPatch((x,y), img)
+
+        # pick the best patch and display it
+        (grayPatch, colorPatch) = pickBestAround((x, y), gray, img)
+
+        variance = calcVariance(patch)
+        displayZoomed(cpatch, "Variance",
+                    "Patch {0}".format(np.sum(variance)))
+        variance = calcVariance(grayPatch)
+        displayZoomed(colorPatch, "Best Patch",
+                    "Best Patch V={0}".format(np.sum(variance)))
 
 img = cv2.imread("blemish-removal/blemish.png", 1)
 # Make a dummy image, will be useful to clear the drawing
