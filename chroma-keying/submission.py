@@ -9,23 +9,27 @@ green = 60
 
 windowName = "Video"
 frame = None
+zoom = True
+changed = True
+play = False
+readOne = True
 
 # load an image
 #cap = cv2.VideoCapture("greenscreen-asteroid.mp4")
 cap = cv2.VideoCapture("greenscreen-demo.mp4")
 if (cap.isOpened()== False): 
     print("Error opening video stream or file")
-property_id = int(cv2.CAP_PROP_FRAME_COUNT) 
-capLength = int(cv2.VideoCapture.get(cap, property_id))
+capLength = cv2.VideoCapture.get(cap, cv2.CAP_PROP_FRAME_COUNT)
 
 # Create a window to display results
 cv2.namedWindow(windowName, cv2.WINDOW_AUTOSIZE)
 
 def onMouse(action, x, y, flags, userdata):
-    global green, frame
+    global green, frame, changed
     if action==cv2.EVENT_LBUTTONDOWN:
         image_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         green = np.median(image_hsv[y-3:y+3,x-3:x+3,0])
+        changed = True
     if action==cv2.EVENT_RBUTTONDOWN:
         patch = frame[y-40:y+40,x-40:x+40]
         cv2.imshow("patch", cv2.resize(patch, (400,400)))
@@ -44,21 +48,44 @@ def buildToleranceMask(img_hsv, toleranceFactor, green):
     value_mask[valued] = 0
     return value_mask
 
-def defringe(image, mask, defringeFactor):
-    # pivot points for X-Coordinates
+def removeGreenUsingLUT(image, mask, factor):
     originalValue = np.array([0, 50, 100, 150, 200, 255])
-    factor = (defringeFactor) / 100
     # Changed points on Y-axis for each channel
     gCurve = originalValue * factor
+    gCurve[1] = 50
+    gCurve[2] = 100
 
     # Create a LookUp Table
     fullRange = np.arange(0,256)
     gLUT = np.interp(fullRange, originalValue, gCurve)
 
     # Get the red channel and apply the mapping
-    gChannel = image[:,:,1]
-    gChannel = cv2.LUT(gChannel, gLUT)
+    gChannel = cv2.bitwise_and(image[:,:,1], mask)
+    gChannel = np.uint8(cv2.LUT(gChannel, gLUT))
+    return gChannel
+
+def removeGreenBruteforce(image, mask, factor):
+    green_channel = image[:,:,1].copy()
+    green_channel = np.uint8(green_channel * factor)
+    return green_channel
+
+
+def defringe(image, mask, defringeFactor):
+    mask_edges = getMaskEdges(mask)
+    #gChannel = removeGreenUsingLUT(image, mask_edges, defringeFactor / 100)
+    gChannel = removeGreenBruteforce(image, mask_edges, defringeFactor / 100)
+    #gChannel = cv2.blur(gChannel, (3,3))
+
+    if zoom:
+        processed = cv2.resize(gChannel, (-1,-1), fx = 5, fy = 5, interpolation=cv2.INTER_NEAREST)
+        processed[0, 0] = 255
+        cv2.imshow("LUT gChannel", processed)
+    green_channel = image[:,:,1]
+    #green_channel[mask_edges > 0] = gChannel[mask_edges > 0]
     image[:,:,1] = gChannel
+    if zoom:
+        processed = cv2.resize(green_channel, (-1,-1), fx = 5, fy = 5, interpolation=cv2.INTER_NEAREST)
+        cv2.imshow("green_channel", processed)
 
     return image
 
@@ -70,9 +97,11 @@ def blurMask(mask, softnessFactor):
     size = (ksize, ksize)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, size)
     morphed = mask.copy()
-    #morphed = cv2.morphologyEx(morphed, cv2.MORPH_CLOSE, kernel)
+    morphed = cv2.morphologyEx(morphed, cv2.MORPH_CLOSE, kernel)
     #morphed = cv2.erode(morphed, kernel)
     #morphed = cv2.GaussianBlur(morphed, size, 2)
+    #processed = cv2.resize(morphed, (-1,-1), fx = 5, fy = 5, interpolation=cv2.INTER_NEAREST)
+    #cv2.imshow("mask", processed)
     return morphed
 
 
@@ -80,13 +109,12 @@ def getMaskEdges(mask):
     lowThreshold = 100
     ratio = 3
     kernelSize = 3
-    size = (31, 31)
+    size = (5, 5)
     edges = cv2.Canny(mask, lowThreshold, lowThreshold * ratio, kernelSize);
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, size)
-    edges = cv2.dilate(edges, kernel, iterations=2)
-    cv2.imshow("edges", edges)
+    edges = cv2.dilate(edges, kernel, iterations=1)
 
-    return None
+    return edges
 
 def preprocess(image):
     return cv2.GaussianBlur(image, (3,3), 2)
@@ -97,8 +125,7 @@ def process(image_original):
 #    image = preprocess(image_original)
     image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     mask = buildToleranceMask(image_hsv, toleranceFactor, green)
-    mask_edges = getMaskEdges(mask)
-    #mask = blurMask(mask, softnessFactor)
+    mask = blurMask(mask, softnessFactor)
 
     image_hsv[:,:,2] = np.bitwise_and(image_hsv[:,:,2], mask)
 
@@ -107,26 +134,28 @@ def process(image_original):
     return defringe(color_image, mask, defringeFactor)
 
 def onChangeTolerance():
-    global toleranceFactor
+    global toleranceFactor, changed
     toleranceFactor = cv2.getTrackbarPos("Tolerance", windowName)
+    changed = True
 
 def onChangeSoftness():
-    global softnessFactor
+    global softnessFactor, changed
     softnessFactor = cv2.getTrackbarPos("Softness", windowName)
+    changed = True
 
 def onChangeDefringe():
-    global defringeFactor
+    global defringeFactor, changed
     defringeFactor = cv2.getTrackbarPos("Defringe", windowName)
+    changed = True
     
 def onPositionChange(*args):
-    global cap, capLength, readOne
+    global cap, capLength, readOne, changed
     progress = cv2.getTrackbarPos("Progress", windowName)
     progress = int((progress /100) * capLength)
     cap.set(cv2.CAP_PROP_POS_FRAMES, progress)
     readOne = True
+    changed = True
 
-play = True
-readOne = False
 cv2.setMouseCallback(windowName, onMouse)
 
 while(cap.isOpened()):
@@ -135,6 +164,8 @@ while(cap.isOpened()):
         ret, frame = cap.read()
         if ret == True:
             resultFrame = frame
+            if zoom:
+                resultFrame = frame[500:600,620:700,:]
         readOne = False
     key = cv2.waitKey(15)
     if key & 0xFF == 27:
@@ -143,8 +174,17 @@ while(cap.isOpened()):
     if key & 0xFF == 32:
         play = not play
 
+    if key & 0xFF == 122:
+        zoom = not zoom
+        play = False
+
     # Display the resulting frame
-    cv2.imshow(windowName, process(resultFrame))
+    if not changed and not play:
+        continue
+    processed = process(resultFrame)
+    if zoom:
+        processed = cv2.resize(processed, (-1,-1), fx = 5, fy = 5, interpolation=cv2.INTER_NEAREST)
+    cv2.imshow(windowName, processed)
     cv2.setWindowTitle(windowName, "Image Green Hue={0}".format(green))
 
     # display progress trackbar
