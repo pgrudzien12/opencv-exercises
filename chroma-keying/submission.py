@@ -2,28 +2,22 @@ import cv2
 import numpy as np
 from datetime import datetime
 
-import greenscreen
-import kj
-import smoothstep
-import ChromaToTransparency
-import first
-
-toleranceFactor = 10
-softnessFactor = 10
-defringeFactor = 100
-green = 60
+slopeFactor = 20
+thresholdFactor = 80
+edgesFactor = 50
+green = np.array((0,255,0))
 
 windowName = "Video"
 frame = None
-zoom = True
+zoom = False
 changed = True
-play = False
+play = True
 readOne = True
 
 # load an image
-#cap = cv2.VideoCapture("greenscreen-asteroid.mp4")
-cap = cv2.VideoCapture("greenscreen-demo.mp4")
-#cap = cv2.VideoCapture("destroyer.mp4")
+cap = cv2.VideoCapture("greenscreen-asteroid.mp4")
+#cap = cv2.VideoCapture("greenscreen-demo.mp4")
+
 if (cap.isOpened()== False): 
     print("Error opening video stream or file")
 capLength = cv2.VideoCapture.get(cap, cv2.CAP_PROP_FRAME_COUNT)
@@ -34,8 +28,7 @@ cv2.namedWindow(windowName, cv2.WINDOW_AUTOSIZE)
 def onMouse(action, x, y, flags, userdata):
     global green, frame, changed
     if action==cv2.EVENT_LBUTTONDOWN:
-        image_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        green = np.median(image_hsv[y-3:y+3,x-3:x+3,0])
+        #green = np.array((0, frame[y,x,1], 0))
         changed = True
     if action==cv2.EVENT_RBUTTONDOWN:
         patch = frame[y-40:y+40,x-40:x+40]
@@ -44,19 +37,19 @@ def onMouse(action, x, y, flags, userdata):
 
 
 
-def onChangeTolerance():
-    global toleranceFactor, changed
-    toleranceFactor = cv2.getTrackbarPos("Tolerance", windowName)
+def onChangeSlope():
+    global slopeFactor, changed
+    slopeFactor = cv2.getTrackbarPos("Slope", windowName)
     changed = True
 
-def onChangeSoftness():
-    global softnessFactor, changed
-    softnessFactor = cv2.getTrackbarPos("Softness", windowName)
+def onChangeThreshold():
+    global thresholdFactor, changed
+    thresholdFactor = cv2.getTrackbarPos("Threshold", windowName)
     changed = True
 
-def onChangeDefringe():
-    global defringeFactor, changed
-    defringeFactor = cv2.getTrackbarPos("Defringe", windowName)
+def onChangeEdges():
+    global edgesFactor, changed
+    edgesFactor = cv2.getTrackbarPos("Edges", windowName)
     changed = True
     
 def onPositionChange(*args):
@@ -68,6 +61,79 @@ def onPositionChange(*args):
     changed = True
 
 cv2.setMouseCallback(windowName, onMouse)
+
+def getMaskEdges(mask):
+    lowThreshold = 100
+    ratio = 3
+    kernelSize = 3
+    size = (5, 5)
+    edges = cv2.Canny(np.uint8(mask*255), lowThreshold, lowThreshold * ratio, kernelSize);
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, size)
+    edges = cv2.dilate(edges, kernel, iterations=1)
+
+    return edges
+
+def removeGreenUsingLUT(image, mask, factor):
+    originalValue = np.array([0, 50, 100, 150, 200, 255])
+    # Changed points on Y-axis for each channel
+    gCurve = originalValue * factor
+
+    # Create a LookUp Table
+    fullRange = np.arange(0,256)
+    gLUT = np.interp(fullRange, originalValue, gCurve)
+
+    # Get the red channel and apply the mapping
+    gChannel = cv2.bitwise_and(image[:,:,1], mask)
+    gChannel = np.uint8(cv2.LUT(gChannel, gLUT))
+    return gChannel
+
+def removeGreenBruteforce(image, mask, factor):
+    r,g,b = image[:,:,0], image[:,:,1], image[:,:,2]
+    g[mask > 0] = np.uint8(factor * (r+b))[mask > 0]
+    return g
+
+def correctEdges(image, mask, edges):
+    mask_edges = getMaskEdges(mask)
+    #gChannel = removeGreenUsingLUT(image, mask_edges, edges / 100)
+    gChannel = removeGreenBruteforce(image, mask_edges, edges / 100 )
+    #gChannel = cv2.blur(gChannel, (3,3))
+
+    if zoom:
+        processed = cv2.resize(gChannel, (-1,-1), fx = 5, fy = 5, interpolation=cv2.INTER_NEAREST)
+        processed[0, 0] = 255
+        cv2.imshow("LUT gChannel", processed)
+    #green_channel = image[:,:,1]
+    #image[:,:,1] = gChannel
+    if zoom:
+        processed = cv2.resize(green_channel, (-1,-1), fx = 5, fy = 5, interpolation=cv2.INTER_NEAREST)
+        cv2.imshow("green_channel", processed)
+
+    return image
+
+def smoothstep( edge0,  edge1, image):
+  x = np.clip((image - edge0) / (edge1 - edge0), 0.0, 1.0); 
+  sq = np.multiply(x, x)
+  return np.multiply(sq, (3 - 2 * x))
+
+def chroma_keying(image, color, slope, threshold):
+    normedIm = image/255
+    normedColor = color/255
+    allGreen = np.full_like(normedIm, normedColor)
+    d = np.linalg.norm(allGreen - normedIm, axis=2)
+    edge0 = threshold * (1.0 - slope)
+    alpha = smoothstep(edge0, threshold, d)
+    image[:,:,0] = np.multiply(image[:,:,0], alpha)
+    image[:,:,1] = np.multiply(image[:,:,1], alpha)
+    image[:,:,2] = np.multiply(image[:,:,2], alpha)
+
+    return image, alpha
+
+
+def process(image, params):
+    slope, threshold, edgesFactor, green = params
+    image, alpha = chroma_keying(image, green, slope/ 100, threshold / 100)
+
+    return correctEdges(image, alpha, edgesFactor)
 
 while(cap.isOpened()):
     # Capture frame-by-frame
@@ -92,12 +158,12 @@ while(cap.isOpened()):
     # Display the resulting frame
     if not changed and not play:
         continue
-    #processed = kj.kj(resultFrame, [toleranceFactor, softnessFactor, defringeFactor, green])
-    processed = process(resultFrame, [toleranceFactor, softnessFactor, defringeFactor, green])
-    #processed = smoothstep.chroma_keying(resultFrame.copy(), 
-        np.array((0, 255, 0)), 
-        toleranceFactor/100, 
-        (softnessFactor+toleranceFactor)/100)
+    #processed = kj.kj(resultFrame, [slopeFactor, thresholdFactor, edgesFactor, green])
+    processed = process(resultFrame.copy(), [slopeFactor, thresholdFactor, edgesFactor, green])
+    #processed = chroma_keying(resultFrame.copy(), 
+    #    green, 
+    #    slopeFactor / 100, 
+    #    thresholdFactor / 100)
     if zoom:
         processed = cv2.resize(processed, (-1,-1), fx = 5, fy = 5, interpolation=cv2.INTER_NEAREST)
     cv2.imshow(windowName, processed)
@@ -108,8 +174,8 @@ while(cap.isOpened()):
     cv2.createTrackbar("Progress", windowName, int(100 * cFrameNo / capLength) , 100, onPositionChange)
 
     # other trackbars
-    cv2.createTrackbar("Tolerance", windowName, toleranceFactor, 100, lambda *args: onChangeTolerance())
-    cv2.createTrackbar("Softness", windowName, softnessFactor, 100, lambda *args: onChangeSoftness())
-    cv2.createTrackbar("Defringe", windowName, defringeFactor, 100, lambda *args: onChangeDefringe())
+    cv2.createTrackbar("Slope", windowName, slopeFactor, 100, lambda *args: onChangeSlope())
+    cv2.createTrackbar("Threshold", windowName, thresholdFactor, 100, lambda *args: onChangeThreshold())
+    cv2.createTrackbar("Edges", windowName, edgesFactor, 100, lambda *args: onChangeEdges())
 
 cv2.destroyAllWindows()
